@@ -6,17 +6,12 @@ import multer from "multer";
 
 const app = express();
 const upload = multer({ dest: "/tmp" });
-
 app.use(express.json({ limit: "20mb" }));
 
 app.get("/", (_req, res) => res.json({ status: "online" }));
 
-/**
- * Util: baixa uma URL para um arquivo local
- */
 async function downloadToFile(url, outPath) {
-  const resp = await axios.get(url, { responseType: "stream", validateStatus: () => true });
-  if (resp.status >= 400) throw new Error(`download failed (${resp.status}) for ${url}`);
+  const resp = await axios.get(url, { responseType: "stream" });
   await new Promise((resolve, reject) => {
     const w = fs.createWriteStream(outPath);
     resp.data.pipe(w);
@@ -25,11 +20,7 @@ async function downloadToFile(url, outPath) {
   });
 }
 
-/**
- * Util: renderiza vídeo 1080x1920 com imagem + áudio + título
- */
 function renderVideo({ imagePath, audioPath, title, outPath }) {
-  // escapa caracteres que quebram o drawtext
   const safeTitle = (title || "")
     .replace(/\\/g, "\\\\")
     .replace(/:/g, "\\:")
@@ -38,8 +29,8 @@ function renderVideo({ imagePath, audioPath, title, outPath }) {
 
   const args = [
     "-y",
-    "-loop", "1", "-i", imagePath,     // imagem
-    "-i", audioPath,                   // áudio
+    "-loop", "1", "-i", imagePath,
+    "-i", audioPath,
     "-vf",
     `scale=1080:1920,drawtext=fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf:text='${safeTitle}':fontcolor=white:fontsize=60:x=(w-text_w)/2:y=h-text_h-80:box=1:boxcolor=0x000000AA:boxborderw=20`,
     "-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-r", "30",
@@ -55,24 +46,15 @@ function renderVideo({ imagePath, audioPath, title, outPath }) {
   });
 }
 
-/**
- * Util: sobe arquivo no GoFile e devolve link direto
- */
 async function uploadToGoFile(localPath) {
   const FormData = (await import("form-data")).default;
   const form = new FormData();
   form.append("file", fs.createReadStream(localPath));
-  const up = await axios.post("https://store1.gofile.io/uploadFile", form, { headers: form.getHeaders(), validateStatus: () => true });
-  if (up.status >= 400 || up.data?.status !== "ok") {
-    throw new Error(`gofile upload failed (${up.status})`);
-  }
-  return up.data?.data?.directLink;
+  const up = await axios.post("https://store1.gofile.io/uploadFile", form, { headers: form.getHeaders() });
+  return up.data?.data?.downloadPage || null;
 }
 
-/**
- * Rota 1: recebe URLs (áudio + imagem)
- * Body JSON: { audioUrl, imageUrl, title }
- */
+// ========== ROTA 1: URLs diretas ==========
 app.post("/render", async (req, res) => {
   try {
     const { audioUrl, imageUrl, title = "Notícia do Dia" } = req.body || {};
@@ -80,7 +62,7 @@ app.post("/render", async (req, res) => {
 
     const tmpAudio = `/tmp/a_${Date.now()}.mpga`;
     const tmpImage = `/tmp/i_${Date.now()}.jpg`;
-    const tmpOut   = `/tmp/v_${Date.now()}.mp4`;
+    const tmpOut = `/tmp/v_${Date.now()}.mp4`;
 
     await downloadToFile(audioUrl, tmpAudio);
     await downloadToFile(imageUrl, tmpImage);
@@ -88,43 +70,37 @@ app.post("/render", async (req, res) => {
 
     const url = await uploadToGoFile(tmpOut);
 
-    // limpeza
     fs.unlink(tmpAudio, ()=>{});
     fs.unlink(tmpImage, ()=>{});
     fs.unlink(tmpOut, ()=>{});
 
     res.json({ status: "ok", url });
   } catch (e) {
-    res.status(500).json({ error: e.message || String(e) });
+    res.status(500).json({ error: e.message });
   }
 });
 
-/**
- * Rota 2: recebe ÁUDIO como arquivo (multipart)
- * Form-Data: audio (file), imageUrl (text), title (text)
- */
-app.post("/render-upload", upload.single("audio"), async (req, res) => {
+// ========== ROTA 2: Upload direto ==========
+app.post("/upload", upload.single("audio"), async (req, res) => {
   try {
     const { imageUrl, title = "Notícia do Dia" } = req.body || {};
     if (!req.file || !imageUrl) return res.status(400).json({ error: "audio (file) e imageUrl são obrigatórios" });
 
-    const tmpAudio = req.file.path; // salvo pelo multer
     const tmpImage = `/tmp/i_${Date.now()}.jpg`;
-    const tmpOut   = `/tmp/v_${Date.now()}.mp4`;
+    const tmpOut = `/tmp/v_${Date.now()}.mp4`;
 
     await downloadToFile(imageUrl, tmpImage);
-    await renderVideo({ imagePath: tmpImage, audioPath: tmpAudio, title, outPath: tmpOut });
+    await renderVideo({ imagePath: tmpImage, audioPath: req.file.path, title, outPath: tmpOut });
 
     const url = await uploadToGoFile(tmpOut);
 
-    // limpeza
-    fs.unlink(tmpAudio, ()=>{});
+    fs.unlink(req.file.path, ()=>{});
     fs.unlink(tmpImage, ()=>{});
     fs.unlink(tmpOut, ()=>{});
 
     res.json({ status: "ok", url });
   } catch (e) {
-    res.status(500).json({ error: e.message || String(e) });
+    res.status(500).json({ error: e.message });
   }
 });
 
